@@ -133,6 +133,16 @@ func TestSubCommandInvoke(t *testing.T) {
 
 func TestHandleCommand(t *testing.T) {
 	usageMessage := `Usage: Download Manager [download] -h
+
+download: An HTTP sub-command for downloading files.
+
+download: <options> server
+
+options: 
+  -location string
+    	Download location (default "./downloads")
+  -x int
+    	Number of files to download
 `
 	tests := []struct{
 		args []string
@@ -157,10 +167,6 @@ func TestHandleCommand(t *testing.T) {
 		{
 			args: []string{"-help"},
 			output: usageMessage,
-			err: nil,
-		},
-		{
-			args: []string{"download"},
 			err: nil,
 		},
 	}

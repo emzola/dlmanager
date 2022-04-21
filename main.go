@@ -23,7 +23,7 @@ func handleCommand(w io.Writer, args []string) error {
 	var err error
 
 	if len(args) < 1 {
-		err = ErrInvalidSubCommand
+		err = cmd.InvalidInputError{Err: ErrInvalidSubCommand}
 	} else {
 		switch args[0] {
 		case "-h":
@@ -33,12 +33,16 @@ func handleCommand(w io.Writer, args []string) error {
 		case "download":
 			err = cmd.HandleDownload(w, args[1:])
 		default:
-			err = ErrInvalidSubCommand
+			err = cmd.InvalidInputError{Err: ErrInvalidSubCommand}
 		}
 	}
 	if err != nil {
-		fmt.Fprintln(w, err.Error())
-		printUsage(w)
+		if !errors.As(err, &cmd.FlagParsingError{}) {
+			fmt.Fprintln(w, err.Error())
+		}
+		if errors.As(err, &cmd.InvalidInputError{}) {
+			printUsage(w)
+		}
 	}
 	return err
 }
@@ -46,7 +50,6 @@ func handleCommand(w io.Writer, args []string) error {
 func main() {
 	err := handleCommand(os.Stdout, os.Args[1:])
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
