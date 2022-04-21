@@ -117,14 +117,14 @@ func TestSubCommandInvoke(t *testing.T) {
 		}
 		if cmd.ProcessState.ExitCode() != tc.expectedExitCode {
 			t.Log(byteBuf.String())
-			t.Fatalf("Expected: %v. Got: %v", tc.expectedExitCode, cmd.ProcessState.ExitCode())
+			t.Fatalf("Expected: %v, Got: %v", tc.expectedExitCode, cmd.ProcessState.ExitCode())
 		}
 
 		output := byteBuf.String()
 		lines := strings.Split(output, "\n")
 		for num := range tc.expectedOutputLines {
 			if lines[num] != tc.expectedOutputLines[num] {
-				t.Fatalf("Expected: %v. Got: %v", tc.expectedOutputLines[num], lines[num])
+				t.Fatalf("Expected: %v, Got: %v", tc.expectedOutputLines[num], lines[num])
 			}
 		}
 		byteBuf.Reset()
@@ -134,7 +134,7 @@ func TestSubCommandInvoke(t *testing.T) {
 func TestHandleCommand(t *testing.T) {
 	usageMessage := `Usage: Download Manager [download] -h
 
-download: An HTTP sub-command for downloading files.
+download: An HTTP sub-command for downloading files
 
 download: <options> server
 
@@ -178,12 +178,12 @@ options:
 			t.Fatalf("Expected nil error. Got: %v", err)
 		}
 		if tc.err != nil && err.Error() != tc.err.Error() {
-			t.Fatalf("Expected: %v. Got: %v", tc.err, err)
+			t.Fatalf("Expected: %v, Got: %v", tc.err, err)
 		}
 		if len(tc.output) != 0 {
 			gotOutput := byteBuf.String()
 			if tc.output != gotOutput {
-				t.Errorf("Expected: %v. Got: %v", tc.output, gotOutput)
+				t.Errorf("Expected: %v, Got: %v", tc.output, gotOutput)
 			}
 		}
 		byteBuf.Reset()

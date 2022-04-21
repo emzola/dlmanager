@@ -6,8 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
+	"mime"
 	"net"
 	"net/http"
+	"os"
+	"path"
+	"path/filepath"
 	"time"
 )
 
@@ -62,6 +67,43 @@ func validateConfig(c *downloadConfig, fs *flag.FlagSet) error {
 	return nil
 }
 
+// downloadLocation sets the download location of the file.
+// If the given file path does not exist, it creates all the missing directories in the path. 
+func downloadLocation(location string) (string, error) {
+	_, err := os.Stat(location)
+	if err != nil {	
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", errors.New("error checking download directory" + err.Error())
+		}
+		locationPath := filepath.FromSlash(location)
+		err := os.MkdirAll(locationPath, 0777)
+		if err != nil {
+			return "", errors.New("error creating download directory" + err.Error())
+		}		
+	}
+	return location, nil
+}
+
+// getFileName fetches the name of the downloadable file.
+func getFileName(r *http.Response) (string, error) {
+	filename := r.Request.URL.Path
+	contentDisposition := r.Header.Get("Content-Disposition")
+	if len(contentDisposition) != 0 {
+		_, params, err := mime.ParseMediaType(contentDisposition)
+		if err == nil {
+			val, ok := params["filename"]
+			if ok {
+				filename = val
+			}
+		}
+	}
+	filename = filepath.Base(path.Clean("/" + filename))
+	if len(filename) == 0 || filename == "." || filename == "/" {
+		return "", errors.New("filename couldn't be determined")
+	}
+	return filename, nil
+}
+
 // HandleDownload handles the download sub-command.
 func HandleDownload(w io.Writer, args []string) error {
 	c := downloadConfig{}
@@ -72,7 +114,7 @@ func HandleDownload(w io.Writer, args []string) error {
 	fs.IntVar(&c.numFiles, "x", 1, "Number of files to download")
 	fs.Usage = func() {
 		var usageString = `
-download: An HTTP sub-command for downloading files.
+download: An HTTP sub-command for downloading files
 
 download: <options> server`
 		fmt.Fprint(w, usageString)
@@ -108,11 +150,40 @@ download: <options> server`
 		return err
 	}
 	defer r.Body.Close()
+
+	// Get filename before download
+	filename, err := getFileName(r)
+	if err != nil {
+		return err
+	}
+
+	// Get download location
+	downloadLocation, err := downloadLocation(c.location)
+	if err != nil {
+		return err
+	}
+
 	responseBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		return err
 	}
 
-	fmt.Fprintln(w, string(responseBody))
+	// Change into the download location directory
+	err = os.Chdir(downloadLocation)
+	if err != nil {
+		return err
+	}
+
+	f, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(responseBody)
+	if err != nil {
+		return err
+	}	
+
+	fmt.Fprintf(w, "Data saved to %s\n", filename)
 	return nil
 }
