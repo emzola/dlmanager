@@ -22,36 +22,6 @@ type downloadConfig struct {
 	numFiles int
 }
 
-// httpClient creates an HTTP client
-func httpClient() *http.Client {
-	// redirectPolicyFunc does not follow redirection request
-	redirectPolicyFunc := func(r *http.Request, via []*http.Request) error {
-		if len(via) >= 1 {
-			return errors.New("stopped after 1 redirect")
-		}
-		return nil
-	}
-
-	// Configure the connection pool
-	t := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          25,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
-
-	return &http.Client{
-		CheckRedirect: redirectPolicyFunc,
-		Transport:     t,
-	}
-}
-
 // validateConfig validates downloadConfig and returns an error if it finds any.
 func validateConfig(c *downloadConfig, fs *flag.FlagSet) error {
 	switch {
@@ -69,7 +39,7 @@ func validateConfig(c *downloadConfig, fs *flag.FlagSet) error {
 
 // downloadLocation sets the download location of the file.
 // If the given file path does not exist, it creates all the missing directories in the path. 
-func downloadLocation(location string) (string, error) {
+func setDownloadLocation(location string) (string, error) {
 	_, err := os.Stat(location)
 	if err != nil {	
 		if !errors.Is(err, fs.ErrNotExist) {
@@ -102,6 +72,74 @@ func getFileName(r *http.Response) (string, error) {
 		return "", errors.New("filename couldn't be determined")
 	}
 	return filename, nil
+}
+
+// getExistingFileSize checks for the existence of the file in the download destination directory.
+// If the file already exists, it returns an integer > 0. If the file does not exist, it returns 0.
+func getExistingFileSize(filename string) (int64, error) {
+	var fileSize int64
+	f, err := os.Stat(filename)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fileSize, nil
+		}
+	} else {
+		return fileSize, err
+	}
+	if f.IsDir() {
+		return fileSize, err
+	}
+	fileSize = f.Size()
+	return fileSize, nil
+}
+
+// httpClient creates an HTTP client.
+func httpClient() *http.Client {
+	// redirectPolicyFunc does not follow redirection request
+	redirectPolicyFunc := func(r *http.Request, via []*http.Request) error {
+		if len(via) >= 1 {
+			return errors.New("stopped after 1 redirect")
+		}
+		return nil
+	}
+
+	// Configure the connection pool
+	t := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          25,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+
+	return &http.Client{
+		CheckRedirect: redirectPolicyFunc,
+		Transport:     t,
+	}
+}
+
+// sendHTTPRequest sends an HTTP request and returns a response.
+func sendHTTPRequest(c downloadConfig, client *http.Client, fileSize int64) (*http.Response, error){
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, c.url[0], nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// Set range header to the request if file already exists at destination path
+	if fileSize > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%v-", fileSize))
+	}	
+	
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 // HandleDownload handles the download sub-command.
@@ -141,40 +179,45 @@ download: <options> server`
 	}
 
 	httpClient := httpClient()
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, c.url[0], nil)
-	if err != nil {
-		return err
-	}
-	r, err := httpClient.Do(req)
+
+	// Get filename before download
+	r, err := sendHTTPRequest(c, httpClient, 0)
 	if err != nil {
 		return err
 	}
 	defer r.Body.Close()
-
-	// Get filename before download
 	filename, err := getFileName(r)
 	if err != nil {
 		return err
 	}
 
-	// Get download location
-	downloadLocation, err := downloadLocation(c.location)
+	// Set download destination
+	setDownloadLocation, err := setDownloadLocation(c.location)
+	if err != nil {
+		return err
+	}
+	destinationPath := filepath.Join(setDownloadLocation, filename)
+
+	// Get file size from download destination
+	existingFileSize, err := getExistingFileSize(destinationPath)
+	if err != nil {
+		return err
+	}
+	resp, err := sendHTTPRequest(c, httpClient, existingFileSize)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return fmt.Errorf("unexpected Status Code: %v", resp.StatusCode)
+	}	
+	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
 
-	responseBody, err := io.ReadAll(r.Body)
-	if err != nil {
-		return err
-	}
-
-	// Change into the download location directory
-	err = os.Chdir(downloadLocation)
-	if err != nil {
-		return err
-	}
-
-	f, err := os.Create(filename)
+	// write the response to a file
+	f, err := os.Create(destinationPath)
 	if err != nil {
 		return err
 	}
