@@ -124,7 +124,21 @@ func httpClient() *http.Client {
 }
 
 // sendHTTPRequest sends an HTTP request and returns a response.
-func sendHTTPRequest(c downloadConfig, client *http.Client, fileSize int64) (*http.Response, error){
+func sendHTTPRequest(c downloadConfig, client *http.Client) (*http.Response, error){
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, c.url[0], nil)
+	if err != nil {
+		return nil, err
+	}
+	
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// sendHTTPRequestWithHeader sends an HTTP request with range header and returns a response.
+func sendHTTPRequestWithHeader(c downloadConfig, client *http.Client, fileSize int64) (*http.Response, error){
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, c.url[0], nil)
 	if err != nil {
 		return nil, err
@@ -140,6 +154,60 @@ func sendHTTPRequest(c downloadConfig, client *http.Client, fileSize int64) (*ht
 		return nil, err
 	}
 	return resp, nil
+}
+
+// writeToDestinationFile writes data to destination file.
+func writeToDestinationFile(filepath string, r *http.Response) error {
+	// Set flag based on the existence of file
+	flag := os.O_CREATE | os.O_WRONLY
+	fInfo, err := getExistingFileSize(filepath)
+	if err == nil {
+		if fInfo > 0 {
+			flag = os.O_APPEND | os.O_WRONLY
+		} 
+	}	
+
+	fWriter, err := os.OpenFile(filepath, flag, 0666)
+	if err != nil {
+		return err
+	}
+
+	// Move to the end of the file if some data is already downloaded
+	whence := io.SeekStart
+	if fInfo > 0 {
+		whence = io.SeekEnd
+	}
+	_, err = fWriter.Seek(0, whence)
+	if err != nil {
+		return err
+	}
+
+	byteBuf := make([]byte, 32 * 1024)
+	var written int64
+	for {
+		// Read data from response body to buffer
+		nr, er := r.Body.Read(byteBuf)
+		if nr > 0 {
+			// Write the buffer to destination file
+			nw, ew := fWriter.Write(byteBuf[0:nr])
+			if nw > 0 {
+				written += int64(nw)
+			}
+			if ew != nil {
+				return ew
+			}
+			if nr != nw {
+				return io.ErrShortWrite
+			}
+		}
+		if er != nil {
+			if er == io.EOF {
+				break
+			}
+			return er
+		}
+	}
+	return nil
 }
 
 // HandleDownload handles the download sub-command.
@@ -181,7 +249,7 @@ download: <options> server`
 	httpClient := httpClient()
 
 	// Get filename before download
-	r, err := sendHTTPRequest(c, httpClient, 0)
+	r, err := sendHTTPRequest(c, httpClient)
 	if err != nil {
 		return err
 	}
@@ -203,29 +271,22 @@ download: <options> server`
 	if err != nil {
 		return err
 	}
-	resp, err := sendHTTPRequest(c, httpClient, existingFileSize)
+	
+	resp, err := sendHTTPRequestWithHeader(c, httpClient, existingFileSize)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		return fmt.Errorf("unexpected Status Code: %v", resp.StatusCode)
 	}	
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
 
-	// write the response to a file
-	f, err := os.Create(destinationPath)
+	// write to destination file
+	err = writeToDestinationFile(destinationPath, resp)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = f.Write(responseBody)
-	if err != nil {
-		return err
-	}	
 
 	fmt.Fprintf(w, "Data saved to %s\n", filename)
 	return nil
