@@ -30,13 +30,17 @@ func validateConfig(file string, config *downloadConfig, fs *flag.FlagSet) error
 	}
 
 	// guard against -x option and -url-file options both specified
-	if isFile && config.numFiles > 0 {
-		return InvalidInputError{ErrInvalidCommand}
+	if isFile && config.numFiles != 0 {
+		return InvalidInputError{ErrNumFilesMustBeZero}
 	}
 
 	// guard against specifying 0 or a negative number for -x option
 	// if -url-file option is not specified
-	if !isFile && config.numFiles <= 0 {
+	if !isFile && config.numFiles == 0 {
+		config.numFiles = 1
+	}
+
+	if !isFile && config.numFiles < 0 {
 		return InvalidInputError{ErrNumDownloadFiles}
 	}
 
@@ -167,9 +171,18 @@ func writeToDestinationFile(filepath string, r *http.Response, bytesChan chan in
 	return nil
 }
 
-// getContentLength returns and int64 of the Content-Length of all files to be downloaded.
-// The content length returned is used to calculate the total download size of all files.
-func getContentLength(client *http.Client, config *downloadConfig) (int64, error) {
+// getContentLength returns an int64 of the Content-Length of each single file to be downloaded.
+func getContentLength(client *http.Client, url string) (int64, error) {
+	resp, err := sendHTTPHeadRequest(url, client)
+	if err != nil {
+		return 0, err
+	}
+	return resp.ContentLength, nil
+}
+
+// getTotalContentLength returns int64 of the total Content-Length of all files to be downloaded.
+// The total content length returned is used to calculate the download progress percentage.
+func getTotalContentLength(client *http.Client, config *downloadConfig) (int64, error) {
 	var contentLength int64
 	for _, u := range config.url {
 		resp, err := sendHTTPHeadRequest(u, client)
@@ -249,13 +262,13 @@ download: <options> server`
 		return FlagParsingError{err}
 	}
 
-	// validate the config
+	// Validate the config
 	err = validateConfig(urlFile, c, fs)
 	if err != nil {
 		return err
 	}
 
-	// read from file if -url-file flag is provided,
+	// Read from file if -url-file flag is provided,
 	// otherwise read urls from positional args specified
 	if len(urlFile) != 0 {
 		err := readUrlFromFile(urlFile, c)
@@ -278,14 +291,14 @@ download: <options> server`
 	bytesChan := make(chan int64)
 	errorChan := make(chan error)
 
-	// get the Content-Length of all files to download
-	contentLength, err := getContentLength(httpClient, c)
+	// Get the Content-Length of all files to download
+	totalContentLength, err := getTotalContentLength(httpClient, c)
 	if err != nil {
 		return err
 	}
 
-	// display download progress info
-	go displayDownloadInfo(w, contentLength, bytesChan, errorChan)
+	// Display download progress info
+	go displayDownloadInfo(w, totalContentLength, bytesChan, errorChan)
 
 	var wg sync.WaitGroup
 	for _, u := range c.url {
@@ -320,6 +333,19 @@ download: <options> server`
 				errorChan <- err
 			}
 
+			// Get the content length of each file
+			contentLength, err := getContentLength(httpClient, url)
+			if err != nil {
+				errorChan <- err
+			}
+
+			// Compare the content length of each file with an existing file size. If they are equal,
+			// no need to download file because has already downloaded completely.
+			if existingFileSize == contentLength {
+				return
+			}
+
+			// Make the HTTP request to download file
 			resp, err := sendHTTPRequestWithHeader(url, httpClient, existingFileSize)
 			if err != nil {
 				errorChan <- err
@@ -330,7 +356,7 @@ download: <options> server`
 				errorChan <- fmt.Errorf("unexpected Status Code: %v", resp.StatusCode)
 			}
 
-			// write to destination file
+			// Write to destination file
 			err = writeToDestinationFile(destinationPath, resp, bytesChan)
 			if err != nil {
 				errorChan <- err

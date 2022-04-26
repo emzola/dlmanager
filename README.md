@@ -13,7 +13,7 @@ dlmanager is an HTTP client for downloading files from the internet. It has the 
 ### Basic download
 
 ```go
-download "https://www.openmymind.net/assets/go/go.pdf"
+download https://www.openmymind.net/assets/go/go.pdf
 
 // Output:
 // Downloading https://www.openmymind.net/assets/go/go.pdf...

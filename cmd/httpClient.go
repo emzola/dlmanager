@@ -61,7 +61,7 @@ func sendHTTPRequestWithHeader(url string, client *http.Client, fileSize int64) 
 	}
 
 	// Set range header to the request if file already exists at destination path
-	if fileSize > 0 && fileSize != req.ContentLength {
+	if fileSize > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%v-", fileSize))
 	}
 
