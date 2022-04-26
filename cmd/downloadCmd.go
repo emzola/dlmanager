@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"errors"
 	"flag"
 	"fmt"
@@ -18,25 +19,35 @@ type downloadConfig struct {
 	url      []string
 	location string
 	numFiles int
-	mu *sync.Mutex
+	mu       *sync.Mutex
 }
 
 // validateConfig validates downloadConfig and returns an error if it finds any.
-func validateConfig(c *downloadConfig, fs *flag.FlagSet) error {
-	switch {
-	case c.numFiles < 1:
-		return InvalidInputError{ErrInvalidCommand}
-	case c.numFiles > 1:
-		for i := 0; i < c.numFiles; i++ {
-			c.url = append(c.url, fs.Arg(i))
-		}
-	default:
-		c.url = append(c.url, fs.Arg(0))
+func validateConfig(file string, config *downloadConfig, fs *flag.FlagSet) error {
+	var isFile bool
+	if len(file) != 0 {
+		isFile = true
 	}
 
-	if c.numFiles == 1 && len(c.url) > 1 {
+	// guard against -x option and -url-file options both specified
+	if isFile && config.numFiles > 0 {
 		return InvalidInputError{ErrInvalidCommand}
 	}
+
+	// guard against specifying 0 or a negative number for -x option
+	// if -url-file option is not specified
+	if !isFile && config.numFiles <= 0 {
+		return InvalidInputError{ErrNumDownloadFiles}
+	}
+
+	// validate positional arguments
+	if !(fs.NArg() > 0) && !isFile {
+		return InvalidInputError{ErrNoServerSpecified}
+	}
+	if !isFile && fs.NArg() != config.numFiles {
+		return InvalidInputError{ErrNoServerSpecified}
+	}
+
 	return nil
 }
 
@@ -87,7 +98,7 @@ func getExistingFileSize(filename string) (int64, error) {
 			return fileSize, nil
 		}
 		return fileSize, err
-	} 
+	}
 	if f.IsDir() {
 		return fileSize, err
 	}
@@ -106,7 +117,7 @@ func writeToDestinationFile(filepath string, r *http.Response, bytesChan chan in
 	flag := os.O_CREATE | os.O_WRONLY
 	if fInfo > 0 {
 		flag = os.O_APPEND | os.O_WRONLY
-	} 
+	}
 
 	file, err := os.OpenFile(filepath, flag, 0666)
 	if err != nil {
@@ -125,7 +136,7 @@ func writeToDestinationFile(filepath string, r *http.Response, bytesChan chan in
 	}
 
 	mu := sync.Mutex{}
-	chunkSize := 32*1024
+	chunkSize := 32 * 1024
 	bytes := make([]byte, chunkSize)
 	var written int64
 
@@ -151,12 +162,26 @@ func writeToDestinationFile(filepath string, r *http.Response, bytesChan chan in
 				mu.Unlock()
 				bytesChan <- written
 			}
-		} 
+		}
 	}
 	return nil
 }
 
-// calculateDownloadPercentage calculates the download and returns float64. 
+// getContentLength returns and int64 of the Content-Length of all files to be downloaded.
+// The content length returned is used to calculate the total download size of all files.
+func getContentLength(client *http.Client, config *downloadConfig) (int64, error) {
+	var contentLength int64
+	for _, u := range config.url {
+		resp, err := sendHTTPHeadRequest(u, client)
+		if err != nil {
+			return contentLength, err
+		}
+		contentLength += resp.ContentLength
+	}
+	return contentLength, nil
+}
+
+// calculateDownloadPercentage returns a float64 of the total download percentage.
 func calculateDownloadPercentage(bytes, contentLength int64) float64 {
 	x := float64(bytes) / 1e+6
 	y := float64(contentLength) / 1e+6
@@ -164,10 +189,11 @@ func calculateDownloadPercentage(bytes, contentLength int64) float64 {
 }
 
 // displayDownloadInfo shows download progress info to the output stream.
-func displayDownloadInfo(w io.Writer, c downloadConfig, contentLength int64, bytes chan int64, err chan error) {
+func displayDownloadInfo(w io.Writer, contentLength int64, bytes chan int64, err chan error) {
 	for {
 		select {
 		case <-bytes:
+			// TODO: FIX downloadPercentage to not calculate wrongly when showing progress
 			downloadPercentage := calculateDownloadPercentage(<-bytes, contentLength)
 			fmt.Fprintf(w, "\ttransferred %d / %d bytes (%.2f%%)\n", <-bytes, contentLength, downloadPercentage)
 		case <-err:
@@ -178,15 +204,34 @@ func displayDownloadInfo(w io.Writer, c downloadConfig, contentLength int64, byt
 	}
 }
 
+// readUrlFromFile reads a list of urls from a file.
+func readUrlFromFile(file string, config *downloadConfig) error {
+	f, err := os.Open(file)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		config.url = append(config.url, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
 // HandleDownload handles the download sub-command.
 func HandleDownload(w io.Writer, args []string) error {
-	c := downloadConfig{}
+	var urlFile string
+	c := &downloadConfig{}
 	c.mu = new(sync.Mutex)
 
 	fs := flag.NewFlagSet("download", flag.ContinueOnError)
 	fs.SetOutput(w)
 	fs.StringVar(&c.location, "location", "./downloads", "Download location")
-	fs.IntVar(&c.numFiles, "x", 1, "Number of files to download")
+	fs.IntVar(&c.numFiles, "x", 0, "Number of files to download")
+	fs.StringVar(&urlFile, "url-file", "", "File containing list of url")
 	fs.Usage = func() {
 		var usageString = `
 download: An HTTP sub-command for downloading files
@@ -204,15 +249,28 @@ download: <options> server`
 		return FlagParsingError{err}
 	}
 
-	// Ensure positional arguments is not less than 1
-	if !(fs.NArg() > 0) {
-		return InvalidInputError{ErrNoServerSpecified}
-	}
-
 	// validate the config
-	err = validateConfig(&c, fs)
+	err = validateConfig(urlFile, c, fs)
 	if err != nil {
 		return err
+	}
+
+	// read from file if -url-file flag is provided,
+	// otherwise read urls from positional args specified
+	if len(urlFile) != 0 {
+		err := readUrlFromFile(urlFile, c)
+		if err != nil {
+			return err
+		}
+	} else {
+		switch {
+		case c.numFiles > 1:
+			for i := 0; i < c.numFiles; i++ {
+				c.url = append(c.url, fs.Arg(i))
+			}
+		case c.numFiles == 1:
+			c.url = append(c.url, fs.Arg(0))			
+		}	
 	}
 
 	httpClient := httpClient()
@@ -220,27 +278,24 @@ download: <options> server`
 	bytesChan := make(chan int64)
 	errorChan := make(chan error)
 
-	var contentLength int64
-	for _, u := range c.url {
-		resp, err := sendHTTPHeadRequest(u, httpClient)
-		if err != nil {
-			return err
-		}
-		contentLength += resp.ContentLength
+	// get the Content-Length of all files to download
+	contentLength, err := getContentLength(httpClient, c)
+	if err != nil {
+		return err
 	}
 
 	// display download progress info
-	go displayDownloadInfo(w, c, contentLength, bytesChan, errorChan)
+	go displayDownloadInfo(w, contentLength, bytesChan, errorChan)
 
 	var wg sync.WaitGroup
 	for _, u := range c.url {
 		fmt.Fprintf(w, "Downloading %v...\n", u)
 		wg.Add(1)
-		go func(url string, c downloadConfig) {
+		go func(url string, config *downloadConfig) {
 			defer wg.Done()
 			c.mu.Lock()
 			defer c.mu.Unlock()
-			
+
 			// Get filename before download
 			r, err := sendHTTPRequest(url, httpClient)
 			if err != nil {
@@ -251,7 +306,7 @@ download: <options> server`
 			if err != nil {
 				errorChan <- err
 			}
-						
+
 			// Set download destination
 			setDownloadLocation, err := setDownloadLocation(c.location)
 			if err != nil {
@@ -280,7 +335,7 @@ download: <options> server`
 			if err != nil {
 				errorChan <- err
 			}
-		}(u, c)		
+		}(u, c)
 	}
 	wg.Wait()
 	fmt.Fprintf(w, "File(s) downloaded to %s\n", c.location)

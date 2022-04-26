@@ -1,14 +1,10 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
-	"sync"
-	"syscall"
 
 	"github.com/emzola/dlmanager/cmd"
 )
@@ -51,37 +47,9 @@ func handleCommand(w io.Writer, args []string) error {
 	return err
 }
 
-// setupSignalHandler reads operating system signals.
-func setupSignalHandler(w io.Writer, cancelFunc context.CancelFunc) {
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		s := <-c
-		fmt.Fprintf(w, "Got signal: %v\n", s)
-		cancelFunc()
-	}()
-}
-
 func main() {
-	ctx, cancel := context.WithCancel(context.Background())
-	go setupSignalHandler(os.Stdout, cancel)
-	
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		loop:
-		for {
-			select {
-			case <-ctx.Done():
-				break loop
-			default:
-				err := handleCommand(os.Stdout, os.Args[1:])
-				if err != nil {
-					os.Exit(1)
-				}
-			}
-		}
-	}()
-	wg.Wait()
+	err := handleCommand(os.Stdout, os.Args[1:])
+	if err != nil {
+		os.Exit(1)
+	}
 }

@@ -4,7 +4,8 @@ import "errors"
 
 var (
 	ErrNoServerSpecified = errors.New("you have to specify a remote server for each file to download")
-	ErrInvalidCommand = errors.New("invalid HTTP command specified")
+	ErrNumDownloadFiles = errors.New("you have to specify a number greater than 0 for -x")
+	ErrInvalidCommand = errors.New("invalid download command specified")
 )
 
 type InvalidInputError struct {

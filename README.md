@@ -7,11 +7,10 @@ dlmanager is an HTTP client for downloading files from the internet. It has the 
 - Saves downloaded files to a given location (directory). If the given directory path does not exist, it creates all the missing directories in the path. If a directory is not specified, it uses the project’s download directory
 - Resumable downloads after connection failure
 - Keeps track of download progress concurrently
-- Shuts down gracefully
 
 ## Usage
 
-### Simple download
+### Basic download
 
 ```go
 download "https://www.openmymind.net/assets/go/go.pdf"
@@ -26,20 +25,20 @@ download "https://www.openmymind.net/assets/go/go.pdf"
 // File(s) downloaded to ./downloads
 ```
 
-### Basic download
+### Single download
 
 ```go
-download -location path/to/dir https://www.openmymind.net/assets/go/go.pdf
+download -location /path/to/dir https://www.openmymind.net/assets/go/go.pdf
 ```
 
-### Multiple download
+### Multiple downloads
 
 ```go
-download -x 2 -location path/to/dir https://www.openmymind.net/assets/go/go.pdf http://www.golang-book.com/public/pdf/gobook.pdf
+download -x 2 -location /path/to/dir https://www.openmymind.net/assets/go/go.pdf http://www.golang-book.com/public/pdf/gobook.pdf
 ```
 
 ### Download from file containing list of urls
 
 ```go
-download -location path/to/dir -url-file path/to/file
+download -location /path/to/dir -url-file /path/to/file
 ```
